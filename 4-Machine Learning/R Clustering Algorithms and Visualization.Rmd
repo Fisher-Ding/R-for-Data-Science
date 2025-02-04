@@ -1,0 +1,343 @@
+---
+title: "R Clustering Algorithms and Visualization"
+author: "Dean Hawk"
+date: "2024-12-17"
+output: html_document
+---
+
+## Environment Setup
+
+```{r Environment Setup}
+# rm(list = ls())
+# Load necessary R packages
+library(pacman)
+p_load(tidymodels,  # Tools for data modeling and processing
+       tidyverse,   # A powerful set of tools for data processing and visualization
+       cluster,     # For calculating clustering metrics such as Silhouette Score
+       factoextra)  # For visualizing clustering results
+```
+
+## 1 K-Means Clustering
+
+K-Means clustering is a distance-based algorithm that assumes data points can be clustered into K clusters.
+
+### Key Steps：
+	1. Use the kmeans() function to perform clustering, setting the number of clusters centers.
+	2. Use ggplot2 for visualization, coloring data points by cluster labels
+	
+### How to Choose the Values of   centers   and   nstart  ?  
+centers Parameter: The number of clusters (K value).
+
+• Methods for selecting K value:
+
+• Elbow Method:
+• Calculate the within-cluster sum of squares (  tot.withinss  ) for different K values.
+• Plot K values against the within-cluster sum of squares and look for the "elbow" point.
+• Beyond the elbow point, increasing K will have diminishing returns on reducing the within-cluster sum of squares.
+
+• Silhouette Method:
+  • Calculate the average silhouette score for different K values and choose the K value with the highest silhouette score.
+  • Use the   silhouette()   function from the   cluster   package to compute the silhouette score.  
+
+nstart   Parameter: The number of random initializations for cluster centers (metric:   tot.withinss  ).
+  •   nstart   controls the number of times the K-Means algorithm tries different initial centroids.
+  • The K-Means clustering algorithm is sensitive to the initial choice of centroids and may converge to local minima.
+
+• Recommendations for   nstart  :
+  • Setting a larger   nstart   increases the probability of finding the global optimum. Recommended values are between 10 and 50.
+  • The default value is   nstart = 1  , which is often insufficient and can lead to unstable results
+
+Summary:
+1.   centers   (K value selection):
+• Use the Elbow Method and Silhouette Method to determine the optimal K value.
+• Typically, plot K against the within-cluster sum of squares or silhouette score and look for the elbow point or maximum value.
+
+2.   nstart   (Number of random initializations):
+• To improve stability, it is recommended to set   nstart = 20   or higher.
+• Increasing   nstart   reduces the impact of local minima and helps find better clustering results.
+	
+```{r K-mean聚类, message=FALSE, warning=FALSE}
+# Example data: mtcars dataset
+data(mtcars)
+set.seed(123)  # Set random seed for reproducibility
+
+# Data preprocessing
+rec <- recipe(~., x = mtcars) %>% 
+  step_normalize(all_numeric()) %>%  # Normalize numeric data
+  step_pca(all_numeric())  # Perform Principal Component Analysis (PCA)
+
+# Prepare data
+prep_data <- rec %>% 
+  prep() %>%  # Prepare the data
+  juice()  # Extract the processed data
+
+# Perform K-Means clustering
+set.seed(123)
+kmeans_model <- kmeans(prep_data, centers = 5, nstart = 20)  # Method for setting parameters?
+kmeans_model  # View detailed information of the clustering model
+
+# Selecting K value
+fviz_nbclust(prep_data, kmeans, method = "wss")  # Elbow Method
+sil_width <- silhouette(kmeans_model$cluster, dist(prep_data))  # Calculate silhouette score
+summary(sil_width)  # Output silhouette score
+plot(sil_width, main = "Silhouette Plot for K-Means Clustering")
+
+# Selecting nstart value
+# Range of different nstart values
+nstart_values <- c(1, 5, 10, 20, 50)
+# List to store results
+results <- data.frame(nstart = integer(), tot_withinss = numeric())
+# Iterate over different nstart values and calculate clustering results
+for (n in nstart_values) {
+  kmeans_result <- kmeans(prep_data, centers = 4, nstart = n)
+  results <- rbind(results, data.frame(nstart = n, tot_withinss = kmeans_result$tot.withinss))
+}
+# View results
+results %>% 
+  arrange(nstart)  # Sort by nstart
+# Visualize the relationship between nstart and total within-cluster sum of squares
+p <- ggplot(results, aes(x = nstart, y = tot_withinss)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Effect of nstart on K-Means Clustering",
+       x = "Number of Starts (nstart)", 
+       y = "Total Within-Cluster Sum of Squares") +
+  theme_minimal()
+plotly::ggplotly(p)  # Use Plotly to create an interactive plot
+
+# Clustering results
+kmeans_model$cluster  # Output cluster labels for each point
+
+# Add clustering results to the data
+prep_data <- prep_data %>% 
+  mutate(
+    cluster = kmeans_model$cluster,
+    id = row_number()  # Add row numbers as data labels
+  )
+prep_data
+
+print(kmeans_model$cluster)  # Cluster each data point belongs to
+print(kmeans_model$centers)  # Centroids of each cluster
+print(kmeans_model$tot.withinss)  # Total cohesion of the clustering (sum of squared errors)
+
+# Visualize clustering results
+fviz_cluster(kmeans_model, data = prep_data, ggtheme = theme_bw())
+
+# Use ggplot2 to visualize clustering results
+ggplot(prep_data, aes(x = PC1, y = PC2, color = factor(prep_data$cluster))) +
+  geom_point(aes(shape = factor(cluster))) +
+  labs(title = "K-Means Clustering", color = "Cluster") +
+  geom_polygon(data = prep_data %>% group_by(cluster) %>% slice(chull(PC1, PC2)),
+               aes(x = PC1, y = PC2, group = cluster, fill = factor(cluster), color = factor(cluster)),
+               alpha = 0.3) +  # Fill color mapped by cluster, border color fixed as red
+  geom_text(aes(label = id), vjust = -1, size = 3) +  # Add data labels, adjust label position with vjust
+  theme_minimal()
+```
+
+
+
+## 2 Hierarchical Clustering
+Hierarchical clustering represents data in a tree structure and performs clustering through agglomeration (bottom-up) or division (top-down).
+
+### Key Steps:
+1. Use the   dist()   function to calculate the distance matrix of the data.
+2. Use   hclust()   for hierarchical clustering, choosing different linkage methods (e.g.,   complete  ,   single  ,   average  ,   ward.D2  ).
+3. Use   cutree()   to cut the dendrogram and obtain clusters.
+4. Use   ggplot2   for visualization.
+
+### How to Choose the Linkage Method?
+• Dense Clusters: If you want to obtain dense clusters, use complete linkage (  complete linkage  ).
+• Sparse Clusters: If the relationship between clusters is sparse or you want to maintain cluster shapes, use single linkage (  single linkage  ).
+• Balanced: If the data does not have obvious cluster structures and you want to balance cluster density and sparsity, use average linkage (  average linkage  ).
+• By Observation: You can observe the impact of different linkage methods on clustering by drawing dendrograms and then choose the most suitable method.
+
+### Observing Cluster Structures in Dendrograms:
+• Single Linkage: Prone to the "chaining effect," characterized by long and sparse merging structures in the dendrogram.
+• Complete Linkage: Generates tight and uniform clusters with clear boundaries in the dendrogram.
+• Average Linkage: A compromise method that generates more balanced clusters.
+• Ward.D2: Generates the most uniform and dense clusters with a smoother dendrogram structure.
+
+### Choosing the Best Method:
+• If cluster boundaries are clear,   complete   or   ward.D2   are usually good choices.
+• If the data tends to form chain-like structures,   single   might be more suitable.
+• Based on your specific task and data characteristics, observe the dendrograms under different methods and choose the best one
+
+
+```{r 层次聚类}
+# Load packages
+pacman::p_load(dbscan)
+library(tidymodels)
+
+# Data normalization
+rec <- recipe(~., data = mtcars) %>%
+  step_normalize(all_numeric()) %>% 
+  step_pca(all_numeric(), num_comp = 2)
+
+prep_data <- rec %>% prep() %>% juice()
+
+# Perform DBSCAN clustering
+dbscan_model <- dbscan(prep_data, eps = 1.0, minPts = 5)
+
+# Clustering results
+dbscan_model$cluster
+dbscan_model
+summary(dbscan_model)
+
+# Visualize results
+library(factoextra)
+fviz_cluster(list(data = prep_data, cluster = dbscan_model$cluster), ggtheme = theme_minimal())
+
+# Perform DBSCAN clustering with different parameters
+dbscan_result <- dbscan(prep_data, eps = 0.5, minPts = 5)
+
+# View clustering results
+dbscan_result$cluster  # Output cluster labels for each point, noise points are labeled as -1
+
+prep_data <- prep_data %>% 
+  mutate(
+    cluster = dbscan_result$cluster,
+    id = row_number()
+  )
+
+# Visualize DBSCAN clustering results
+ggplot(prep_data, aes(x = PC1, y = PC2, color = factor(dbscan_result$cluster))) +
+  geom_point(size = 3) +
+  stat_ellipse(alpha = 0.7) +
+  geom_text(aes(label = id), vjust = -1, size = 3) +  # Add data labels, adjust label position with vjust
+  labs(title = "DBSCAN Clustering", color = "Cluster") +
+  theme_minimal()
+
+# Assume dbscan_result is the result of DBSCAN clustering
+prep_data$cluster <- factor(dbscan_result$cluster)  # Store clustering results in the data
+# Plot DBSCAN clustering boundaries
+ggplot(prep_data, aes(x = PC1, y = PC2, color = cluster, fill = cluster)) +
+  geom_point(aes(shape = cluster), size = 3) +       # Plot points using different shapes based on cluster
+  geom_polygon(data = prep_data %>% group_by(cluster) %>% slice(chull(PC1, PC2)),
+               aes(x = PC1, y = PC2, group = cluster, fill = factor(cluster), color = factor(cluster)),
+               alpha = 0.15) +  # Fill color mapped by cluster, border color fixed as red
+  geom_text(aes(label = id), vjust = -1, size = 3) +  # Add data labels, adjust label position with vjust
+  labs(title = "DBSCAN Clustering", 
+       x = "PC1", 
+       y = "PC2") +
+  theme_minimal()
+```
+### Choosing K Values Based on Different Linkage Methods
+1. Complete Linkage (Top-Left):
+  • Observe the horizontal cut line at a height of around 6, which divides the tree into 3 to 4 main clusters.
+  • The branches below the cut are short, indicating that data points within clusters are relatively close, and clusters are well-separated.
+
+2. Single Linkage (Top-Right):
+  • The chaining effect is evident, with short vertical segments and no clear cut points.
+  • If the cut height is too high, almost all points merge gradually, making it difficult to find a reasonable K value.
+  • Single linkage is not recommended for directly selecting K values from the dendrogram.
+3. Average Linkage (Bottom-Left):
+  • Cutting at a height of around 4 divides the tree into 4 to 5 clusters with relatively uniform branch structures.
+  • Average linkage provides a more balanced clustering result, which can be further validated using methods like silhouette scores to confirm the optimal K.
+
+4. Ward.D2 Linkage (Bottom-Right):
+  • Cutting at a height of around 10 clearly divides the tree into 3 main clusters.
+  • Clusters generated by Ward's method are more uniform and well-separated, making it suitable for higher K values.
+
+3 DBSCAN Clustering
+  DBSCAN is a density-based clustering algorithm that can identify clusters of varying densities and automatically handle noise points.
+  
+Key Steps:
+  1. Use the   dbscan()   function for DBSCAN clustering, where   eps   is the radius of the neighborhood, and   minPts   is the minimum number of samples.
+  2. DBSCAN can automatically identify noise points, which are labeled as -1.
+  3. Use   ggplot2   for visualization of the results.
+
+```{r dbscan聚类}
+# Load packages
+pacman::p_load(dbscan)
+library(tidymodels)
+
+# Data normalization
+rec <- recipe(~., data = mtcars) %>%
+  step_normalize(all_numeric()) %>% 
+  step_pca(all_numeric(), num_comp = 2)
+
+prep_data <- rec %>% prep() %>% juice()
+
+# Perform DBSCAN clustering
+dbscan_model <- dbscan(prep_data, eps = 1.0, minPts = 5)
+
+# Clustering results
+dbscan_model$cluster
+dbscan_model
+summary(dbscan_model)
+
+# Visualize results
+library(factoextra)
+fviz_cluster(list(data = prep_data, cluster = dbscan_model$cluster), ggtheme = theme_minimal())
+
+# Perform DBSCAN clustering with different parameters
+dbscan_result <- dbscan(prep_data, eps = 0.5, minPts = 5)
+
+# View clustering results
+dbscan_result$cluster  # Output cluster labels for each point, noise points are labeled as -1
+
+prep_data <- prep_data %>% 
+  mutate(
+    cluster = dbscan_result$cluster,
+    id = row_number()
+  )
+
+# Visualize DBSCAN clustering results
+ggplot(prep_data, aes(x = PC1, y = PC2, color = factor(dbscan_result$cluster))) +
+  geom_point(size = 3) +
+  stat_ellipse(alpha = 0.7) +
+  geom_text(aes(label = id), vjust = -1, size = 3) +  # Add data labels, adjust label position with vjust
+  labs(title = "DBSCAN Clustering", color = "Cluster") +
+  theme_minimal()
+
+# Assume dbscan_result is the result of DBSCAN clustering
+prep_data$cluster <- factor(dbscan_result$cluster)  # Store clustering results in the data
+# Plot DBSCAN clustering boundaries
+ggplot(prep_data, aes(x = PC1, y = PC2, color = cluster, fill = cluster)) +
+  geom_point(aes(shape = cluster), size = 3) +       # Plot points using different shapes based on cluster
+  geom_polygon(data = prep_data %>% group_by(cluster) %>% slice(chull(PC1, PC2)),
+               aes(x = PC1, y = PC2, group = cluster, fill = factor(cluster), color = factor(cluster)),
+               alpha = 0.15) +  # Fill color mapped by cluster, border color fixed as red
+  geom_text(aes(label = id), vjust = -1, size = 3) +  # Add data labels, adjust label position with vjust
+  labs(title = "DBSCAN Clustering", 
+       x = "PC1", 
+       y = "PC2") +
+  theme_minimal()
+```
+
+## Gaussian Mixture Models (GMM) Clustering
+
+```{r 高斯混合模型（Gaussian Mixture Models, GMM） 聚类}
+library(mclust)
+
+# Perform model-based clustering
+mclust_result <- Mclust(iris)
+
+# result
+summary(mclust_result)
+
+# visualization
+plot(mclust_result, what = "classification")
+```
+
+## Summary
+  • K-Means Clustering:Suitable for data with uniformly shaped clusters and no noise.
+  • Hierarchical Clustering:Appropriate for analyzing the hierarchical structure of a dataset and generating dendrograms.
+  • DBSCAN Clustering:Effective for clusters of varying densities and capable of automatically identifying noise points.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
